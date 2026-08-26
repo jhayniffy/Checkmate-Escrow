@@ -126,6 +126,12 @@ impl EscrowContract {
             .get(&DataKey::Match(match_id))
             .ok_or(Error::MatchNotFound)?;
 
+        // Extra guard: never allow a deposit once both sides are already funded,
+        // regardless of state, to close any reentrancy/race window.
+        if m.player1_deposited && m.player2_deposited {
+            return Err(Error::AlreadyFunded);
+        }
+
         if m.state != MatchState::Pending {
             return Err(Error::InvalidState);
         }
