@@ -139,6 +139,37 @@ fn test_cancel_refunds_deposit() {
 }
 
 #[test]
+fn test_cancel_zeroes_balance_for_all_pending_deposit_states() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+
+    // No deposits at all.
+    let id0 = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "game_bal0"),
+        &Platform::Lichess,
+    );
+    client.cancel_match(&id0, &player1);
+    assert_eq!(client.get_escrow_balance(&id0), 0);
+
+    // Single (partial) deposit.
+    let id1 = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "game_bal1"),
+        &Platform::Lichess,
+    );
+    client.deposit(&id1, &player1);
+    client.cancel_match(&id1, &player1);
+    assert_eq!(client.get_escrow_balance(&id1), 0);
+}
+
+#[test]
 fn test_create_match_emits_event() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);

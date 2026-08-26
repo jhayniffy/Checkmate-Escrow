@@ -256,6 +256,11 @@ impl EscrowContract {
             client.transfer(&env.current_contract_address(), &m.player2, &m.stake_amount);
         }
 
+        // Clear deposit flags once refunds are issued so get_escrow_balance
+        // correctly reports 0 after a partial or full refund.
+        m.player1_deposited = false;
+        m.player2_deposited = false;
+
         m.state = MatchState::Cancelled;
         env.storage()
             .persistent()
