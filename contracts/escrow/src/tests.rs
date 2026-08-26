@@ -170,6 +170,47 @@ fn test_cancel_zeroes_balance_for_all_pending_deposit_states() {
 }
 
 #[test]
+fn test_submit_result_batch_mixed_funded_and_unfunded() {
+    let (env, contract_id, oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    let funded_id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "batch_funded"),
+        &Platform::Lichess,
+    );
+    client.deposit(&funded_id, &player1);
+    client.deposit(&funded_id, &player2);
+
+    let unfunded_id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "batch_unfunded"),
+        &Platform::Lichess,
+    );
+
+    let _ = oracle;
+    let entries = vec![
+        &env,
+        (funded_id, Winner::Player1),
+        (unfunded_id, Winner::Player1),
+    ];
+    let results = client.submit_result_batch(&entries);
+
+    assert_eq!(results.get(0).unwrap(), None);
+    assert_eq!(results.get(1).unwrap(), Some(Error::NotFunded));
+    assert_eq!(token_client.balance(&player1), 1100);
+    assert_eq!(client.get_match(&funded_id).state, MatchState::Completed);
+    assert_eq!(client.get_match(&unfunded_id).state, MatchState::Pending);
+}
+
+#[test]
 fn test_create_match_emits_event() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);

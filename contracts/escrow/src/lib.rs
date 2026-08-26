@@ -4,7 +4,7 @@ mod errors;
 mod types;
 
 use errors::Error;
-use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Env, String, Symbol, Vec};
 use types::{DataKey, Match, MatchState, Platform, Winner};
 
 /// ~30 days at 5s/ledger. Used as both the TTL threshold and the extend-to value.
@@ -222,6 +222,88 @@ impl EscrowContract {
         env.events().publish(topics, (match_id, winner));
 
         Ok(())
+    }
+
+    /// Submit results for multiple matches at once. Unlike `submit_result`,
+    /// a failure on one entry does not abort the batch: every entry gets a
+    /// corresponding `Some(Error)` on failure or `None` on success, so
+    /// callers can tell exactly which matches failed and why (including
+    /// matches that are not yet funded).
+    pub fn submit_result_batch(
+        env: Env,
+        entries: Vec<(u64, Winner)>,
+    ) -> Vec<Option<Error>> {
+        let mut results: Vec<Option<Error>> = Vec::new(&env);
+
+        if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
+            for _ in entries.iter() {
+                results.push_back(Some(Error::ContractPaused));
+            }
+            return results;
+        }
+
+        let oracle: Address = match env.storage().instance().get(&DataKey::Oracle) {
+            Some(o) => o,
+            None => {
+                for _ in entries.iter() {
+                    results.push_back(Some(Error::Unauthorized));
+                }
+                return results;
+            }
+        };
+        oracle.require_auth();
+
+        for (match_id, winner) in entries.iter() {
+            let m: Option<Match> = env.storage().persistent().get(&DataKey::Match(match_id));
+            let mut m = match m {
+                Some(m) => m,
+                None => {
+                    results.push_back(Some(Error::MatchNotFound));
+                    continue;
+                }
+            };
+
+            if m.state == MatchState::Pending {
+                results.push_back(Some(Error::NotFunded));
+                continue;
+            }
+            if m.state != MatchState::Active {
+                results.push_back(Some(Error::InvalidState));
+                continue;
+            }
+
+            let client = token::Client::new(&env, &m.token);
+            let pot = m.stake_amount * 2;
+            match winner {
+                Winner::Player1 => {
+                    client.transfer(&env.current_contract_address(), &m.player1, &pot)
+                }
+                Winner::Player2 => {
+                    client.transfer(&env.current_contract_address(), &m.player2, &pot)
+                }
+                Winner::Draw => {
+                    client.transfer(&env.current_contract_address(), &m.player1, &m.stake_amount);
+                    client.transfer(&env.current_contract_address(), &m.player2, &m.stake_amount);
+                }
+            }
+
+            m.state = MatchState::Completed;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Match(match_id), &m);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Match(match_id),
+                MATCH_TTL_LEDGERS,
+                MATCH_TTL_LEDGERS,
+            );
+
+            let topics = (Symbol::new(&env, "match"), symbol_short!("completed"));
+            env.events().publish(topics, (match_id, winner));
+
+            results.push_back(None);
+        }
+
+        results
     }
 
     /// Cancel a pending match and refund any deposits.
