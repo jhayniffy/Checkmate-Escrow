@@ -211,6 +211,56 @@ fn test_submit_result_batch_mixed_funded_and_unfunded() {
 }
 
 #[test]
+fn test_expire_match_with_delisted_token_returns_error() {
+    let (env, contract_id, _oracle, player1, player2, token, admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "expire1"),
+        &Platform::Lichess,
+    );
+    client.deposit(&id, &player1);
+
+    // Token gets delisted mid-flight.
+    let _ = admin;
+    client.set_token_allowed(&token, &false);
+
+    let result = client.try_expire_match(&id);
+    assert_eq!(result, Err(Ok(Error::TokenNotAllowed)));
+
+    // No refund should have happened, and the match should still be Pending.
+    assert_eq!(token_client.balance(&player1), 900);
+    assert_eq!(client.get_match(&id).state, MatchState::Pending);
+}
+
+#[test]
+fn test_expire_match_with_allowed_token_refunds() {
+    let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let token_client = TokenClient::new(&env, &token);
+
+    let id = client.create_match(
+        &player1,
+        &player2,
+        &100,
+        &token,
+        &String::from_str(&env, "expire2"),
+        &Platform::Lichess,
+    );
+    client.deposit(&id, &player1);
+    client.expire_match(&id);
+
+    assert_eq!(token_client.balance(&player1), 1000);
+    assert_eq!(client.get_match(&id).state, MatchState::Cancelled);
+    assert_eq!(client.get_escrow_balance(&id), 0);
+}
+
+#[test]
 fn test_create_match_emits_event() {
     let (env, contract_id, _oracle, player1, player2, token, _admin) = setup();
     let client = EscrowContractClient::new(&env, &contract_id);

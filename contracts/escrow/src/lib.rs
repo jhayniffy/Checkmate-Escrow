@@ -361,6 +361,74 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Admin toggles whether a token is allowed for new/expiring matches.
+    /// Tokens are allowed by default; this is only used to explicitly delist one.
+    pub fn set_token_allowed(env: Env, token: Address, allowed: bool) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::Unauthorized)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenAllowed(token), &allowed);
+        Ok(())
+    }
+
+    /// Expire a still-pending match and refund any deposits, e.g. once the
+    /// oracle/game session has timed out. Anyone may call this. If the
+    /// match's token has since been removed from the allowlist, this
+    /// returns `TokenNotAllowed` instead of attempting (and possibly
+    /// panicking on, or silently failing) a transfer with a delisted token.
+    pub fn expire_match(env: Env, match_id: u64) -> Result<(), Error> {
+        let mut m: Match = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Match(match_id))
+            .ok_or(Error::MatchNotFound)?;
+
+        if m.state != MatchState::Pending {
+            return Err(Error::InvalidState);
+        }
+
+        let token_allowed: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenAllowed(m.token.clone()))
+            .unwrap_or(true);
+        if !token_allowed {
+            return Err(Error::TokenNotAllowed);
+        }
+
+        let client = token::Client::new(&env, &m.token);
+        if m.player1_deposited {
+            client.transfer(&env.current_contract_address(), &m.player1, &m.stake_amount);
+        }
+        if m.player2_deposited {
+            client.transfer(&env.current_contract_address(), &m.player2, &m.stake_amount);
+        }
+
+        m.player1_deposited = false;
+        m.player2_deposited = false;
+        m.state = MatchState::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Match(match_id), &m);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Match(match_id),
+            MATCH_TTL_LEDGERS,
+            MATCH_TTL_LEDGERS,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "match"), symbol_short!("expired")),
+            match_id,
+        );
+
+        Ok(())
+    }
+
     /// Read a match by ID.
     pub fn get_match(env: Env, match_id: u64) -> Result<Match, Error> {
         env.storage()
